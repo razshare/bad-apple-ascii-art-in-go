@@ -3,14 +3,19 @@ package main
 import (
 	"embed"
 	"fmt"
-	"github.com/faiface/beep"
-	"github.com/faiface/beep/speaker"
-	"github.com/faiface/beep/wav"
+	"github.com/hajimehoshi/go-mp3"
+	"github.com/hajimehoshi/oto"
 	"github.com/inancgumus/screen"
+	"io"
 	"log"
 	"os"
 	"time"
 )
+
+//go:embed res
+var res embed.FS
+
+const count = 6569
 
 type Node[T any] struct {
 	data T
@@ -21,27 +26,36 @@ type LinkedList[T any] struct {
 	head *Node[T]
 }
 
-//go:embed res
-var res embed.FS
+func play(playing chan bool) {
+	file, openError := res.Open("res/BA.mp3")
+	if openError != nil {
+		log.Fatal(openError)
+	}
+	defer file.Close()
 
-const count = 6569
-
-func main() {
-	file, fileError := res.Open("res/BA.wav")
-	if fileError != nil {
-		log.Fatal(fileError)
+	decoder, decoderError := mp3.NewDecoder(file)
+	if decoderError != nil {
+		log.Fatal(decoderError)
 	}
 
-	streamer, format, decodeError := wav.Decode(file)
-	if decodeError != nil {
-		log.Fatal(decodeError)
+	context, contextError := oto.NewContext(decoder.SampleRate(), 2, 2, 8192)
+	if contextError != nil {
+		log.Fatal(contextError)
 	}
-	defer streamer.Close()
-	speakerError := speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
-	if speakerError != nil {
-		log.Fatal(speakerError)
-	}
+	defer context.Close()
 
+	player := context.NewPlayer()
+	defer player.Close()
+	playing <- true
+	_, copyError := io.Copy(player, decoder)
+	if copyError != nil {
+		playing <- false
+		log.Fatal(copyError)
+	}
+	playing <- false
+}
+
+func findFrames() *LinkedList[string] {
 	frames := &LinkedList[string]{
 		head: &Node[string]{},
 	}
@@ -59,24 +73,30 @@ func main() {
 		head = head.next
 		index++
 	}
+	return frames
+}
 
-	playing := true
+func draw(playing chan bool) {
+	frames := findFrames()
+	headLocal := frames.head
+	playingAudio := <-playing
 
 	go func() {
-		headLocal := frames.head
-		for playing && "" != headLocal.data {
-			screen.Clear()
-			_, _ = os.Stdout.WriteString(headLocal.data)
-			time.Sleep(time.Millisecond * 33) // roughly 30 fps
-			headLocal = headLocal.next
+		for {
+			playingAudio = <-playing
 		}
 	}()
 
-	done := make(chan bool)
-	speaker.Play(beep.Seq(streamer, beep.Callback(func() {
-		done <- true
-	})))
+	for playingAudio && "" != headLocal.data {
+		screen.Clear()
+		_, _ = os.Stdout.WriteString(headLocal.data)
+		time.Sleep(time.Millisecond * 33) // roughly 30 fps
+		headLocal = headLocal.next
+	}
+}
 
-	<-done
-	playing = false
+func main() {
+	playing := make(chan bool, 1)
+	go draw(playing)
+	play(playing)
 }
